@@ -15,6 +15,47 @@ namespace AquaMai.Mods.GameSystem;
     zh: "重新映射新框頂板 LED 至 837-15070-02 (舊版燈板) 的重低音喇叭 LED、頂板 LED 以及中央 LED")]
 public class LegacyBoardMapping
 {
+    // 緩存反射獲取的 FieldInfo 和 MethodInfo，避免每幀重複查詢
+    private static readonly FieldInfo _controlField;
+    private static readonly FieldInfo _boardField;
+    private static readonly FieldInfo _ctrlField;
+    private static readonly FieldInfo _ioCtrlField;
+    private static readonly FieldInfo _setLedGs8BitCommandField;
+    private static readonly FieldInfo _gsUpdateField;
+    private static readonly MethodInfo _sendForceCommandMethod;
+
+    static LegacyBoardMapping()
+    {
+        var ledIfType = typeof(Bd15070_4IF);
+        _controlField = ledIfType.GetField("_control", BindingFlags.NonPublic | BindingFlags.Instance);
+        _gsUpdateField = ledIfType.GetField("_gsUpdate", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var controlType = typeof(Mecha.Bd15070_4Control);
+        _boardField = controlType.GetField("_board", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var boardType = typeof(Comio.BD15070_4.Board15070_4);
+        _ctrlField = boardType.GetField("_ctrl", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var boardCtrlType = typeof(Comio.BD15070_4.BoardCtrl15070_4);
+        _ioCtrlField = boardCtrlType.GetField("_ioCtrl", BindingFlags.NonPublic | BindingFlags.Instance);
+        _sendForceCommandMethod = boardCtrlType.GetMethod("SendForceCommand", BindingFlags.Public | BindingFlags.Instance);
+
+        var ioCtrlType = typeof(IoCtrl);
+        _setLedGs8BitCommandField = ioCtrlType.GetField("SetLedGs8BitCommand", BindingFlags.Public | BindingFlags.Instance);
+
+        if (_controlField == null)
+        {
+            MelonLoader.MelonLogger.Error("[LegacyBoardMapping] Failed to cache _control field");
+        }
+        if (_setLedGs8BitCommandField == null)
+        {
+            MelonLoader.MelonLogger.Error("[LegacyBoardMapping] Failed to cache SetLedGs8BitCommand field");
+        }
+        if (_sendForceCommandMethod == null)
+        {
+            MelonLoader.MelonLogger.Error("[LegacyBoardMapping] Failed to cache SendForceCommand method");
+        }
+    }
     [HarmonyPatch(typeof(Bd15070_4IF), "_construct")]
     public class Bd15070_4IF_Construct_Patch
     {
@@ -86,93 +127,76 @@ public class LegacyBoardMapping
             return;
         }
 
-        // Use reflection to access the IoCtrl and call SetLedGs8BitCommand[8] directly
+        // Use cached reflection FieldInfo and MethodInfo to access the IoCtrl and call SetLedGs8BitCommand[8] directly
         // Then set _gsUpdate flag so PreExecute() sends the update command (just like buttons do)
         try
         {
-            var ledIfType = typeof(Bd15070_4IF);
-            var controlField = ledIfType.GetField("_control", BindingFlags.NonPublic | BindingFlags.Instance);
-
-            if (controlField == null)
+            if (_controlField == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] _control field not found in Bd15070_4IF");
                 return;
             }
 
-            var control = controlField.GetValue(ledIf[playerIndex]);
+            var control = _controlField.GetValue(ledIf[playerIndex]);
             if (control == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] Control object is null");
                 return;
             }
 
-            // Get _board field from Bd15070_4Control
-            var controlType = control.GetType();
-            var boardField = controlType.GetField("_board", BindingFlags.NonPublic | BindingFlags.Instance);
-            if (boardField == null)
+            if (_boardField == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] _board field not found in Bd15070_4Control");
                 return;
             }
 
-            var board = boardField.GetValue(control);
+            var board = _boardField.GetValue(control);
             if (board == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] Board object is null");
                 return;
             }
 
-            // Get _ctrl field from Board15070_4
-            var boardType = board.GetType();
-            var ctrlField = boardType.GetField("_ctrl", BindingFlags.NonPublic | BindingFlags.Instance);
-            if (ctrlField == null)
+            if (_ctrlField == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] _ctrl field not found in Board15070_4");
                 return;
             }
 
-            var boardCtrl = ctrlField.GetValue(board);
+            var boardCtrl = _ctrlField.GetValue(board);
             if (boardCtrl == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] BoardCtrl object is null");
                 return;
             }
 
-            // Get _ioCtrl field from BoardCtrl15070_4
-            var boardCtrlType = boardCtrl.GetType();
-            var ioCtrlField = boardCtrlType.GetField("_ioCtrl", BindingFlags.NonPublic | BindingFlags.Instance);
-            if (ioCtrlField == null)
+            if (_ioCtrlField == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] _ioCtrl field not found in BoardCtrl15070_4");
                 return;
             }
 
-            var ioCtrl = ioCtrlField.GetValue(boardCtrl);
+            var ioCtrl = _ioCtrlField.GetValue(boardCtrl);
             if (ioCtrl == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] IoCtrl object is null");
                 return;
             }
 
-            // Get SetLedGs8BitCommand array from IoCtrl (public field)
-            var ioCtrlType = typeof(IoCtrl);
-            var setLedGs8BitCommandField = ioCtrlType.GetField("SetLedGs8BitCommand", BindingFlags.Public | BindingFlags.Instance);
-            if (setLedGs8BitCommandField == null)
+            if (_setLedGs8BitCommandField == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] SetLedGs8BitCommand field not found in IoCtrl");
                 return;
             }
 
-            var setLedGs8BitCommandArray = setLedGs8BitCommandField.GetValue(ioCtrl) as SetLedGs8BitCommand[];
+            var setLedGs8BitCommandArray = _setLedGs8BitCommandField.GetValue(ioCtrl) as SetLedGs8BitCommand[];
             if (setLedGs8BitCommandArray == null || setLedGs8BitCommandArray.Length <= 8)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] SetLedGs8BitCommand array is null or too small");
                 return;
             }
 
-            // Get SendForceCommand method from BoardCtrl15070_4
-            var sendForceCommandMethod = boardCtrlType.GetMethod("SendForceCommand", BindingFlags.Public | BindingFlags.Instance);
-            if (sendForceCommandMethod == null)
+            if (_sendForceCommandMethod == null)
             {
                 MelonLoader.MelonLogger.Error("[LegacyBoardMapping] SendForceCommand method not found in BoardCtrl15070_4");
                 return;
@@ -184,15 +208,12 @@ public class LegacyBoardMapping
             // ledPos = 9 == center
             setLedGs8BitCommandArray[8].setColor(8, color);
             setLedGs8BitCommandArray[9].setColor(9, color);
-            sendForceCommandMethod.Invoke(boardCtrl, new object[] { setLedGs8BitCommandArray[8] });
-            sendForceCommandMethod.Invoke(boardCtrl, new object[] { setLedGs8BitCommandArray[9] });
+            _sendForceCommandMethod.Invoke(boardCtrl, new object[] { setLedGs8BitCommandArray[8] });
+            _sendForceCommandMethod.Invoke(boardCtrl, new object[] { setLedGs8BitCommandArray[9] });
 
-            // Set the _gsUpdate flag on Bd15070_4IF so PreExecute() sends the update command
-            // This matches exactly how buttons work - they set _gsUpdate = true
-            var gsUpdateField = ledIfType.GetField("_gsUpdate", BindingFlags.NonPublic | BindingFlags.Instance);
-            if (gsUpdateField != null)
+            if (_gsUpdateField != null)
             {
-                gsUpdateField.SetValue(ledIf[playerIndex], true);
+                _gsUpdateField.SetValue(ledIf[playerIndex], true);
             }
             else
             {
